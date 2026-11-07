@@ -1,27 +1,4 @@
-"""
-XE BAM THEO TAM BIA (bia tron dong tam, IN DEN TRANG hoac in mau do/hong)
-  Dien thoai (app DroidCam) --WiFi--> Laptop (OpenCV nhan dien bia) --UDP--> ESP32
-  Dung chung code ESP32 "xe_ai_esp32.ino" (khong can nap lai)
 
-Khong can AI, khong can train. Chi can:  pip install opencv-python numpy
-Chay:
-  - Dung HOTSPOT dien thoai (khuyen dung, it tre):   python nhan_dien_bia.py hotspot
-  - Hoac go IP dien thoai trong DroidCam:            python nhan_dien_bia.py 192.168.4.2
-  Xe tu bao dia chi cho laptop -> khong can go IP cua xe.
-
-Cach nhan dien: tim cac vong tron (den, hoac do/hong) CO CHUNG MOT TAM.
-  Vat thuong khong co nhieu vong tron dong tam nen it bi nham.
-  Mac dinh: bia DEN TRANG (BIA_MAU = False). Dung bia mau thi doi BIA_MAU = True.
-
-Phim:
-  Chuot trai vao vong do cua bia : hoc lai mau bia (chi dung khi BIA_MAU = True)
-  C     : ve lai mau mac dinh (chi dung khi BIA_MAU = True)
-  M     : bat/tat cua so "Mask" (trang = phan mau bia)
-  SPACE : tam dung / chay tiep
-  R     : reset xe (khi xe CO LAP hoac da KHOA MUC TIEU)
-  P     : kiem tra ket noi toi xe
-  Q     : thoat (xe dung lai)
-"""
 
 import math
 import socket
@@ -33,37 +10,37 @@ import time
 import cv2
 import numpy as np
 
-# ================== CAU HINH ==================
-CAM_URL = "http://192.168.4.2:4747/video"   # dung khi khong go gi trong lenh chay
-ESP32_IP = "auto"       # "auto" = tu tim xe (xe tu bao dia chi) | hoac go IP co dinh, vd "192.168.4.1"
+
+CAM_URL = "http://192.168.4.2:4747/video" 
+ESP32_IP = "auto"      
 ESP32_PORT = 4210
-HELLO_PORT = 4211       # cong xe bao dia chi, giong HELLO_PORT trong code ESP32
+HELLO_PORT = 4211       
 
 car_ip = None if ESP32_IP == "auto" else ESP32_IP
 
-FLIP = False            # True neu dung camera truoc
+FLIP = False            
 FRAME_WIDTH = 640
 SEND_HZ = 15
-CENTER_TOL = 0.15       # chi de ve, giong CENTER_TOL trong code ESP32
+CENTER_TOL = 0.15      
 
-BIA_MAU = False         # False = bia in DEN TRANG (mac dinh) | True = bia mau do/hong
+BIA_MAU = False      
 
-# --- Bia den trang ---
-DARK_MAX = 80           # diem toi hon muc nay (0..255) coi la mau den cua bia
-ADAPT_BLOCK = 41        # vung so sanh sang/toi cuc bo (so le) -> chiu duoc anh sang khong deu
-ADAPT_C = 12            # toi hon trung binh xung quanh bao nhieu thi coi la den
 
-# --- Bia mau: do / hong (mau do nam o 2 dau thang mau H cua OpenCV) ---
+DARK_MAX = 80          
+ADAPT_BLOCK = 41        
+ADAPT_C = 12          
+
+
 DEFAULT_RANGES = [((0, 70, 40), (10, 255, 255)), ((150, 70, 40), (179, 255, 255))]
 H_TOL, S_TOL, V_TOL = 12, 80, 80   # do rong khoang mau khi bam chuot hoc mau
 
-# Can it nhat bao nhieu vong dong tam (cham giua cung tinh 1 vong).
-# Bia den trang can 3 vong de khong nham banh xe, mat kinh, loa...
+
+
 MIN_RINGS = 2 if BIA_MAU else 3
-MIN_COMP_PX = 25        # bo qua vung mau nho hon (pixel) -> loc nhieu
-RING_THICK = 0.15       # vong phai "mong": do lech khoang cach / khoang cach trung binh < muc nay
-MIN_COVERAGE = 0.35     # vong (hoac cung tron) phai phu it nhat 35% vong quanh tam -> bi che 1 phan van nhan
-HOLD_FRAMES = 3         # mat bia vai khung hinh van giu ket qua cu (chong nhap nhay)
+MIN_COMP_PX = 25        
+RING_THICK = 0.15       
+MIN_COVERAGE = 0.35    
+HOLD_FRAMES = 3         
 
 ranges = list(DEFAULT_RANGES)
 last_hsv = None
