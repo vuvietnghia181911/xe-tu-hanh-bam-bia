@@ -1,0 +1,11 @@
+# Thu vien Python cho phan nhan dien tren laptop
+# Cai dat:  pip install -r requirements.txt
+# Da chay thu voi: Python 3.13, opencv-python 5.0.0.93, numpy 2.5.4
+
+# --- Ban chinh: nhan_dien_bia.py (nhan dien bia bang hinh hoc, khong dung AI) ---
+opencv-python>=4.8
+numpy>=1.24
+
+# --- Ban thu nghiem: nhan_dien_ai.py (YOLOv8) - KHONG can cho ban chinh ---
+# Bo dau # o dong duoi neu muon chay ban YOLO (thu vien nang, keo theo PyTorch):
+# ultralytics>=8.0
