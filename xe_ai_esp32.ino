@@ -1,133 +1,98 @@
-/*
-  =====================================================
-   XE TỰ HÀNH KẾT HỢP AI NHẬN DIỆN VÀ BÁM THEO MỤC TIÊU
-   (theo thuật toán trong video của HaiTech Lab)
 
-   - ESP32 tự phát WiFi "XE_AI", điện thoại + laptop kết nối vào
-   - Điện thoại (DroidCam) -> laptop (Python + YOLOv8) -> gửi lệnh UDP về xe
-   - CHƯA THẤY MỤC TIÊU: chế độ tự hành mặc định (né vật cản)
-       gặp vật -> dừng, quét 4 hướng (phải, chéo phải, chéo trái, trái)
-               -> có hướng trống: quay đúng về hướng thoáng nhất
-                  (2 hướng gần bằng nhau thì ưu tiên bên trái)
-               -> bị chặn hết: lùi xa, quét lại; vẫn kín thì quay đầu
-               -> quay đầu nhiều lần liền vẫn kẹt: dừng, báo CÔ LẬP (bấm R để reset)
-   - THẤY MỤC TIÊU: laptop điều khiển
-       quay cho tâm mục tiêu trùng tâm camera -> chạy thẳng tới
-       còn cách 15 cm -> dừng, báo KHÓA MỤC TIÊU
-
-   ESP32 DevKit V1 (đế mở rộng) + L298N + HC-SR04 + SG90
-   Arduino IDE + "esp32 by Espressif" bản 3.x | Serial Monitor: 115200
-  =====================================================
-   Chân giữ nguyên như xe hiện tại:
-   L298N:   ENA-D32  IN1-D33  IN2-D25  IN3-D26  IN4-D27  ENB-D14
-   HC-SR04: Trig-D23  Echo-D22 (qua cầu phân áp 1k/2k)  VCC-V  GND-G
-   Servo:   hàng D19 (nâu-G, đỏ-V, cam-S)
-
-   Lệnh từ laptop (UDP cổng 4210):
-     "T,x,area"  thấy mục tiêu (x: -1 trái .. 0 giữa .. +1 phải, area: 0..1)
-     "N"         không thấy mục tiêu
-     "PING"      kiểm tra kết nối -> xe trả lời "SUCCESS"
-     "R"         reset khi xe bị cô lập / đã khóa mục tiêu
-     "S" / "G"   tạm dừng / chạy tiếp
-*/
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
-// ================== WIFI ==================
-// true  = xe kết nối vào HOTSPOT của điện thoại (KHUYÊN DÙNG: hình mượt, ít trễ)
-// false = xe tự phát WiFi "XE_AI" (video phải đi qua ESP32 nên dễ bị trễ)
 const bool USE_PHONE_HOTSPOT = true;
-const char* HOTSPOT_SSID = "XeAi";      // tên điểm phát WiFi của điện thoại
-const char* HOTSPOT_PASS = "07022006";  // mật khẩu điểm phát
+const char* HOTSPOT_SSID = "XeAi";      
+const char* HOTSPOT_PASS = "07022006"; 
 
-const char* AP_SSID = "XE_AI";     // dùng khi USE_PHONE_HOTSPOT = false (hoặc không vào được hotspot)
-const char* AP_PASS = "12345678";  // ít nhất 8 ký tự
-const int AP_CHANNEL = 6;          // bị nhiễu, giật thì đổi sang 1 hoặc 11
+const char* AP_SSID = "XE_AI";    
+const char* AP_PASS = "12345678";  
+const int AP_CHANNEL = 6;          
 const int UDP_PORT = 4210;
-const int HELLO_PORT = 4211;  // xe tự báo địa chỉ cho laptop qua cổng này
+const int HELLO_PORT = 4211;  
 
-// ================== CHÂN ==================
-const int ENA = 32, IN1 = 33, IN2 = 25;  // bên trái
-const int IN3 = 26, IN4 = 27, ENB = 14;  // bên phải
+
+const int ENA = 32, IN1 = 33, IN2 = 25;  
+const int IN3 = 26, IN4 = 27, ENB = 14;  
 const int TRIG_PIN = 23;
 const int ECHO_PIN = 22;
 const int SERVO_PIN = 19;
-const int LED_PIN = 2;  // sáng = đang bám mục tiêu
+const int LED_PIN = 2;  
 
-// ================== TỐC ĐỘ (0..255) ==================
-int SPEED_FORWARD = 100;    // chạy tự hành
-int SPEED_APPROACH = 100;   // đi thẳng tới mục tiêu (sau khi đã ngắm xong)
-int SPEED_SLOW = 90;        // gần mục tiêu (< 50 cm) thì chậm lại
-int SPEED_ALIGN = 220;      // nhịp quay tại chỗ khi ngắm (xe 4 bánh quay tại chỗ cần lực mạnh)
-int SPEED_TURN = 220;       // rẽ khi né vật cản (quay tại chỗ cần lực mạnh, thấp quá chỉ nhích)
-int TURN_KICK_SPEED = 250;  // mồi riêng cho động tác rẽ (mạnh hơn mồi thường)
+
+int SPEED_FORWARD = 100;    
+int SPEED_APPROACH = 100;   
+int SPEED_SLOW = 90;       
+int SPEED_ALIGN = 220;      
+int SPEED_TURN = 220;      
+int TURN_KICK_SPEED = 250;  
 int TURN_KICK_MS = 120;
-int SPEED_BACK = 140;  // lùi (thấp quá thì xe lùi rất ngắn hoặc đứng bánh)
-int KICK_SPEED = 140;  // mồi lúc khởi động cho bánh dễ lăn
+int SPEED_BACK = 140;  
+int KICK_SPEED = 140;  
 int KICK_MS = 90;
 
-// ================== KHOẢNG CÁCH (cm) ==================
-const int OBSTACLE_CM = 30;      // tự hành: vật gần hơn mức này -> dừng nhìn 2 bên
-const int CLEAR_CM = 40;         // bên nào xa hơn mức này = trống
-const int TARGET_STOP_CM = 20;   // bám mục tiêu: cảm biến thấy bia gần hơn mức này thì dừng, khóa mục tiêu
-const float ARRIVE_AREA = 0.30;  // bia chiếm >= 30% khung hình = đã tới sát -> dừng (kể cả cảm biến không thấy bia)
-const float SLOW_AREA = 0.10;    // bia chiếm >= 10% khung hình (khoảng 60 cm) -> chạy chậm
-const int SLOW_ZONE_CM = 60;     // cảm biến thấy vật gần hơn mức này -> chạy chậm
-const int BRAKE_MS = 120;        // phanh khi tới mục tiêu (không bị trôi)
-const int LOCK_RELEASE_CM = 35;  // đã khóa mà mục tiêu đi xa hơn mức này -> bám tiếp
 
-// ================== CAMERA ==================
-const float CENTER_TOL = 0.15;                // dùng khi đã khóa mục tiêu
-const unsigned long TARGET_TIMEOUT_MS = 700;  // lâu không có tin mục tiêu -> coi như mất
-const unsigned long LOST_WAIT_MS = 1500;      // vừa mất mục tiêu -> DỪNG CHỜ (không chạy thẳng bừa)
-const unsigned long LOCK_HOLD_MS = 2000;      // đã khóa mà mất mục tiêu lâu -> về tự hành
+const int OBSTACLE_CM = 30;      
+const int CLEAR_CM = 40;         
+const int TARGET_STOP_CM = 20;   
+const float ARRIVE_AREA = 0.30; 
+const float SLOW_AREA = 0.10;   
+const int SLOW_ZONE_CM = 60;     
+const int BRAKE_MS = 120;        
+const int LOCK_RELEASE_CM = 35; 
 
-// ---- DỪNG - NGẮM - ĐI ----
-const float AIM_TOL = 0.15;         // NGẮM: |x| nhỏ hơn mức này = bia đã ở giữa
-const int AIM_CONFIRM = 2;          // NGẮM: bia ở giữa đủ 3 tin liên tiếp mới coi là ngắm xong
-const int AIM_WAIT_MS = 350;        // NGẮM: sau mỗi nhịp quay đứng chờ cho camera gửi hình MỚI (trễ nhiều thì tăng)
-const int AIM_PULSE_MIN_MS = 60;    // nhịp quay ngắn nhất
-const int AIM_PULSE_GAIN_MS = 200;  // bia lệch càng nhiều nhịp quay càng dài
-const float GO_TOL = 0.3;           // ĐI: bia lệch quá mức này -> dừng lại ngắm lại
-const int GO_BAD_COUNT = 2;         // ĐI: lệch đủ 2 tin liên tiếp mới dừng (chống nhiễu)
 
-// ---- VẬT CẢN KHI ĐANG ĐI TỚI BIA ----
-const float LOCK_MIN_AREA = 0.08;   // bia chiếm >= 8% khung hình = bia ở gần -> vật trước mặt CHÍNH LÀ bia
-const int TRACK_OBSTACLE_CM = 25;   // đang đi tới bia mà có vật gần hơn mức này (không phải bia) -> vòng qua
-const int DETOUR_ANGLE = 60;        // vòng qua vật cản: quay lệch bao nhiêu độ
-const int DETOUR_MS = 900;          // chạy bao lâu để vượt qua vật cản
+const float CENTER_TOL = 0.15;                
+const unsigned long TARGET_TIMEOUT_MS = 700; 
+const unsigned long LOST_WAIT_MS = 1500;     
+const unsigned long LOCK_HOLD_MS = 2000;     
 
-// ---- TÌM LẠI MỤC TIÊU ----
-const int SEARCH_STEP_MS = 60;      // mỗi nhịp quay tìm (cộng thêm thời gian mồi khi quay)
-const int SEARCH_WAIT_MS = 450;     // sau mỗi nhịp đứng chờ camera gửi hình mới
-const int SEARCH_MAX_STEPS = 10;    // quay khoảng 1 vòng vẫn không thấy bia -> về tự hành
 
-// ================== NÉ VẬT CẢN ==================
-const int TURN90_MS = 380;                      // thời gian quay ~90 độ (chỉnh trên sàn thật)
-const int TURN_STEP_MS = 150;                   // rẽ xong mà phía trước chưa trống -> quay thêm từng nhịp này
-const int TURN_EXTRA_STEPS = 6;                 // quay thêm tối đa mấy nhịp
-const int BACK_SHORT_MS = 250;                  // lùi ngắn khi vật quá sát (lấy chỗ để quay)
-const int BACK_LONG_MS = 1200;                  // bị chặn hết: lần lùi xa đầu tiên
-const int BACK_STEP_MS = 500;                   // mỗi lần sau lùi xa thêm chừng này (1200 -> 1700 ...)
-const int BACK_IF_CLOSE_CM = 20;                // vật gần hơn mức này mới lùi trước khi quay
-const int MAX_BACK_TRIES = 2;                   // bị chặn hết: lùi xa + quét lại tối đa mấy lần rồi quay đầu
-const int LOOK_MS = 350;                        // chờ servo quay tới nơi
-const int TIE_CM = 15;                          // 2 hướng chênh nhau ít hơn mức này = coi như bằng nhau -> ưu tiên trái
-const int ISOLATE_TURNS = 3;                    // quay đầu 3 lần...
-const unsigned long ISOLATE_WINDOW_MS = 20000;  // ...trong 20 giây vẫn kẹt -> CÔ LẬP
+const float AIM_TOL = 0.15;         
+const int AIM_CONFIRM = 2;          
+const int AIM_WAIT_MS = 350;        
+const int AIM_PULSE_MIN_MS = 60;    
+const int AIM_PULSE_GAIN_MS = 200;  
+const float GO_TOL = 0.3;           
+const int GO_BAD_COUNT = 2;       
+
+const float LOCK_MIN_AREA = 0.08;   
+const int TRACK_OBSTACLE_CM = 25;   
+const int DETOUR_ANGLE = 60;       
+const int DETOUR_MS = 900;         
+
+
+const int SEARCH_STEP_MS = 60;      
+const int SEARCH_WAIT_MS = 450;    
+const int SEARCH_MAX_STEPS = 10;    
+
+
+const int TURN90_MS = 380;                     
+const int TURN_STEP_MS = 150;                  
+const int TURN_EXTRA_STEPS = 6;                
+const int BACK_SHORT_MS = 250;                  
+const int BACK_LONG_MS = 1200;                
+const int BACK_STEP_MS = 500;                  
+const int BACK_IF_CLOSE_CM = 20;               
+const int MAX_BACK_TRIES = 2;              
+const int LOOK_MS = 350;                      
+const int TIE_CM = 15;                        
+const int ISOLATE_TURNS = 3;                    
+const unsigned long ISOLATE_WINDOW_MS = 20000; 
 
 const int SERVO_CENTER = 90;
-// Các hướng quét khi gặp vật: phải, chéo phải, chéo trái, trái
+
 const int SCAN_ANGLES[] = { 30, 60, 120, 150 };
 const int SCAN_N = 4;
 
-const bool SERVO_REVERSED = false;  // lệnh nhìn phải mà servo nhìn trái -> true
-const bool INVERT_LEFT = false;     // bên trái quay ngược khi đi tiến -> true
-const bool INVERT_RIGHT = false;    // bên phải quay ngược khi đi tiến -> true
-const bool SWAP_SIDES = true;       // lệnh quay TRÁI mà xe quay PHẢI (đi thẳng vẫn đúng) -> true
+const bool SERVO_REVERSED = false;  
+const bool INVERT_LEFT = false;     
+const bool INVERT_RIGHT = false;   
+const bool SWAP_SIDES = true;     
 
-// ================== TRẠNG THÁI ==================
+
 enum Mode { PAUSED,
             AUTO,
             CONTROL,
@@ -151,22 +116,22 @@ bool lastTurnRight = false;
 unsigned long turnAroundTimes[ISOLATE_TURNS] = { 0 };
 int turnAroundIdx = 0;
 
-// Trạng thái DỪNG - NGẮM - ĐI
+
 enum AimState { AIMING,
                 GOING };
 AimState aimState = AIMING;
-unsigned long msgCount = 0;      // số tin mục tiêu đã nhận (để biết có tin MỚI không)
-unsigned long lastEvalMsg = 0;   // tin cuối cùng đã dùng để quyết định
-unsigned long aimWaitUntil = 0;  // đang chờ hình mới đến thời điểm này
+unsigned long msgCount = 0;      
+unsigned long lastEvalMsg = 0;   
+unsigned long aimWaitUntil = 0; 
 int centeredCount = 0;
 int goBadCount = 0;
 
-// Trạng thái TÌM LẠI MỤC TIÊU
-bool searchRight = true;              // quay tìm về phía nào
-int searchSteps = 0;                  // đã quay mấy nhịp
-unsigned long searchWaitUntil = 0;    // đang chờ camera đến thời điểm này
 
-// Bắt đầu (lại) bước NGẮM: dừng xe, chờ hình mới rồi mới tính
+bool searchRight = true;              
+int searchSteps = 0;                 
+unsigned long searchWaitUntil = 0;   
+
+
 void resetFrontFast();
 void startAiming() {
   resetFrontFast();
@@ -199,7 +164,7 @@ void sendStatus(const char* s) {
 
 void setMode(Mode m) {
   if (m == mode) return;
-  if (m == CONTROL) startAiming();  // vừa thấy mục tiêu -> bắt đầu bằng bước NGẮM
+  if (m == CONTROL) startAiming();  
   mode = m;
   Serial.printf("[%s]\n", modeName(m));
   sendStatus(modeName(m));
@@ -210,7 +175,7 @@ void setMode(Mode m) {
 void startSearch(bool toRight) {
   searchRight = toRight;
   searchSteps = 0;
-  searchWaitUntil = millis() + SEARCH_WAIT_MS;   // nhìn trước 1 lần rồi mới quay
+  searchWaitUntil = millis() + SEARCH_WAIT_MS; 
   setMode(SEARCH);
   Serial.printf("[TIM] Tim lai bia, quay ve phia %s\n", toRight ? "PHAI" : "TRAI");
 }
